@@ -1,22 +1,149 @@
 ---
-title: "PMLProject"
-author: "W.H."
-date: "July 25, 2015"
+title: "Human Activity Recognition From Weight Lifting Exercise Dataset Collected By Wearable Devices"
+date: "July 26, 2015"
 output: html_document
 ---
+# Synopsis
 
-This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+This is the report for the course project of Practical Machine Learning class provided by Johns Hopkins University and coursera. 
 
-When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+In this project, we conduct human activity recognition using the data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways. The data is available from the website: http://groupware.les.inf.puc-rio.br/har (see the section on the Weight Lifting Exercise(WLE) Dataset). 
+
+In this report we will describe the scenario of data retrieval, data clean and how we construct Machine Learning Models from the data extracted from the raw WLE dataset. We also conduct cross validation to evaluate the performance of the recognition models.  
+
+Our local machine is a MacBookPro 13-inch laptop with a 2.7GHz Intel Core i7 processor and 8G DDR3 Memory. The R version we use is 3.2.1(World-Famous Astronaut) and most packages are updated to date.
+
+# Raw Data Retrival
+
+We first download the raw data from the cloud to the local machine and load the raw data to the memory. 
+```{r}
+# Download the raw training/testing data
+raw.training.url <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+raw.training.file <- "pml-training.csv"
+if (!file.exists(raw.training.file))
+  download.file(raw.training.url, raw.training.file,"curl")
+
+raw.testing.url <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+raw.testing.file <- "pml-testing.csv"
+if (!file.exists(raw.testing.file))
+  download.file(raw.testing.url, raw.testing.file,"curl")
+
+# Import raw traning/testing data into R enviroment
+raw.training <- read.csv(raw.training.file, na.strings=c("NA",""), header=TRUE)
+raw.testing <- read.csv(raw.testing.file, na.strings=c("NA",""), header=TRUE)
+```
+
+# Feature Selection and Data Clean
+We first take a quick look on the raw traning data:
+```{r eval=FALSE}
+str(raw.training)
+```
+From the result of `str()`, we noticed that there are many `NA` cells in the data frame. Then we conduct a deeper investigation on the numbers of `NA`'s in each column and the statistics is in the following table, 
+```{r}
+na.stat <- sapply(raw.training, function(x) length(which(is.na(x))))
+table(na.stat)
+```
+From the table we found that, of all the 160 variables, there are 100 variables that have 19216 `NA`s out of 19622 observations. For the purpose of human activity recognition, we choose to avoid taking into account all these 100 variables but just keep the rest 60 variables. The resultant is stored in tmp.df and we can take a look at it:
+```{r}
+tmp.df <- raw.training[ , na.stat ==0 ]
+```
+Apparently, the first seven variables `X`, `user_name`,`raw_timestamp_part_1`, `raw_timestamp_part_2`, `cvtd_timestamp`, `new_window`, `num_window` are not related to this research, so we choose to further remove these variables from the data frame `tmp.df`.
 
 ```{r}
-summary(cars)
+df <- tmp.df[ , -c(1:7) ]
+str(df)
 ```
 
-You can also embed plots, for example:
+Now `df` is the data frame with the selected features that would be used in the following steps.
 
-```{r, echo=FALSE}
-plot(cars)
+# Data Slicing
+
+We follow the policy of partition of training:testing = 7:3 as usual.
+```{r}
+# load packages and data
+library(caret)
+# create training set indexes with 75% of data
+inTrain <- createDataPartition(y=df$classe,p=0.7, list=FALSE)
+# subset spam data to training
+training <- df[inTrain,]
+# subset spam data (the rest) to test
+testing <- df[-inTrain,]
+# dimension of original and training dataset
+rbind("raw dataset" = dim(raw.training), "cleaned dataset" = dim(df),"training set" = dim(training))
 ```
 
-Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+# Machine Learning Model 1: Classification Tree
+We first try the classification tree on the `training` dataset with `classe` as the outcome and all the rest 52 variables as predictors.
+```{r}
+library(rpart)
+library(rattle)
+# fit classification tree as a model
+modFit.ct <- rpart(classe ~ ., data = training, method = "class")
+```
+
+We then apply the classification tree model on the 30% testing data set to evaluate the performance of the model.  
+```{r}
+predict.ct <- predict(modFit.ct, testing, type = "class")
+confusionMatrix(testing$classe, predict.ct)
+```
+From the confusion matrix output, we noticed that the accuracy of prediction is as low as 0.7436, which is not very satisfactory. So we decide to use the more complex and promising model of random forest. 
+
+# Machine Learning Model 2: Random Forest
+
+We will apply k-fold cross validation when we train the random forest model. This implies breaking the training dataset into K subsets and then build the model on the remaining training data in each subset and applied to the test subset. larger k generally introduce model with less prediction bias but more variance and smaller k vise versa.
+
+We applied 3-fold cross validation when we try to train the forest. Based on our experiments, this would accelerate the training process without losing accuracy. We also tried 5-fold and 10-fold, the performances of the outcomes are very similar but the 3-fold is the quickest.
+
+Another free parameter is ntree, the number of trees. We tried 100, 200 and 500 and finally choose ntree=200, this is a good comprimise of accuracy and training speed.
+
+When possible, we can turn on the `allowParallel` option to accelerate the speed of training.
+
+We also found that using function call of `randomForest()` with the same syntax and parameters as `train()` would be much faster in the training process. 
+
+On our local machine, the training generally can converge in less than 3 minutes with the function parameters shown below. On the other hand, using all the training data set for the training purposes would take hours.
+
+```{r}
+library(randomForest)
+set.seed(4543)
+modFit.rf<-randomForest(classe ~ ., data=training, 
+                        trControl=trainControl(method="cv",number=3),method="rf",
+                        ntree=200,prox=TRUE,allowParallel=TRUE,importance=TRUE)
+modFit.rf
+```
+We notice that the OOB estimate of error rate: 0.55%, which is very satisfactory.  
+
+To evalute the relative importance of the variables for the prediction, we turn on the importance option and show the top 15 most important variables in the Figure below. 
+```{r}
+varImpPlot(modFit.rf,n.var=15)
+```
+
+We can again apply the random forest model on the 30% testing dataset to evaluate the prediction performance of the model. 
+```{r}
+predict.rf <- predict(modFit.rf, testing)
+confusionMatrix(predict.rf, testing$classe)
+```
+From the `confusionMatrix()` output, we can found huge gain on prediction accuracy and other performance measurements over the classification tree model.
+
+# Applying Random Forest Model on the Testing Dataset
+
+Now we used the random forest model `modFit.rf` to predict results for the testing data downloaded before. The prediction answers are shown below.
+```{r}
+tmp.df <- raw.testing[ , na.stat ==0 ]
+test.df <- tmp.df[ , -c(1:7) ]
+predict(modFit.rf,test.df)
+```
+
+
+Finally, we can use the function provided by the lecturer to generate the files for the submission part of the project.  
+
+```{r eval=FALSE}
+pml_write_files = function(x){
+  n = length(x)
+  for(i in 1:n){
+    filename = paste0("problem_id_",i,".txt")
+    write.table(x[i],file=filename,quote=FALSE,row.names=FALSE,col.names=FALSE)
+  }
+}
+answers <- as.character(predict(modFit.rf,test.df))
+pml_write_files(answers)
+```
